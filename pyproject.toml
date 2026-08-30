@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "ai-research-assistant"
-version = "0.1.0"
-description = "A citation-first research brief agent powered by Hermes Agent"
+version = "0.2.0"
+description = "A primary-source, claim-evidence research agent powered by Hermes Agent"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = []

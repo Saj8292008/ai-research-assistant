@@ -21,6 +21,12 @@ def test_hermes_synthesizer_parses_json_response():
                         "summary": "A finding [S1].",
                         "findings": ["One result [S1]."],
                         "uncertainty": ["Single source [S1]."],
+                        "evidence": [
+                            {
+                                "claim_id": "summary",
+                                "spans": [{"source_id": "S1", "quote": "Some evidence"}],
+                            }
+                        ],
                     }
                 ),
                 "stderr": "",
@@ -32,6 +38,8 @@ def test_hermes_synthesizer_parses_json_response():
     )
 
     assert draft.summary == "A finding [S1]."
+    assert draft.evidence[0].spans[0].quote == "Some evidence"
+    assert "exact quote" in captured[0][3]
     assert captured[0][:3] == ["hermes", "chat", "-q"]
     assert "Return ONLY valid JSON" in captured[0][3]
 
@@ -63,9 +71,7 @@ def test_hermes_synthesizer_passes_explicit_provider_and_model():
 
 def test_hermes_synthesizer_reports_cli_failure_from_stdout():
     def fake_run(command: list[str], **kwargs):
-        return type(
-            "Result", (), {"returncode": 1, "stdout": "bad provider", "stderr": ""}
-        )()
+        return type("Result", (), {"returncode": 1, "stdout": "bad provider", "stderr": ""})()
 
     with pytest.raises(RuntimeError, match="bad provider"):
         HermesSynthesizer(run_command=fake_run).synthesize(

@@ -1,192 +1,252 @@
 # AI Research Assistant
 
-A small, citation-first agent that turns a research question into a short Markdown brief. It gathers up to five inspectable sources, asks Hermes Agent to synthesize only those sources, checks the citations programmatically, and makes uncertainty explicit.
+A primary-source, claim-evidence research agent powered by Hermes Agent. It collects a bounded source set, ranks evidence, produces a cited brief, attaches exact source passages to every claim, independently checks citation/evidence integrity, and generates an interactive evidence inspector.
 
-This is an educational portfolio project, not a fact-checking service. The default collector uses Wikipedia summaries for reproducibility and a small scope; important decisions should be checked against primary sources.
+This is an educational reliability project—not a fact-checking service. Its deterministic lexical entailment screen catches unsupported or unrelated evidence, but it is not equivalent to expert semantic verification.
 
-## What the project does
+## What it does
 
-Given a topic, the agent:
+Given a research question, the agent:
 
-1. Searches Wikipedia for a deliberately small source set (1–5 pages).
-2. Converts each source into a numbered evidence packet (`S1`, `S2`, ...).
-3. Calls the locally installed Hermes Agent CLI for constrained synthesis.
-4. Requires citations in the summary and every finding.
-5. Rejects citations that do not refer to a collected source.
-6. Requires an uncertainty section.
-7. Produces a readable Markdown brief and reference list.
+1. Searches configured source families: arXiv, Crossref, Data.gov, and Wikipedia.
+2. Normalizes provenance: publisher, authors, publication/retrieval dates, canonical URL, source family, and SHA-256 content hash.
+3. Caches API responses and retries transient network failures with exponential backoff.
+4. Ranks candidates by topic relevance, source authority, recency, and source-family diversity.
+5. Sends a bounded evidence packet to Hermes Agent.
+6. Requires citations and exact source quotes for the summary and every finding.
+7. Rejects unknown citations, fabricated quotes, missing evidence, and unsupported claims.
+8. Produces a Markdown brief plus a responsive HTML evidence inspector.
 
-The code separates collection, synthesis, evaluation, and rendering so each stage can be tested or replaced independently.
+## Why it exists
 
-## Why I built it
+Research agents can produce fluent prose while hiding weak retrieval, invented citations, or unsupported claims. This project keeps collection, model synthesis, deterministic evaluation, and presentation as separate stages so failures remain visible and each layer can be tested independently.
 
-Research agents often produce fluent answers that hide weak evidence, unsupported claims, or uncertainty. I built this project to explore a narrower question: how much reliability can be added with a small, inspectable workflow around an LLM?
+Hermes Agent is the reasoning adapter, but the project is about auditable research—not framework demonstration.
 
-It demonstrates agent workflow design, tool use, prompt constraints, deterministic validation, test-driven development, failure handling, and responsible communication of limitations. Hermes Agent is the reasoning tool in the workflow, but the project is about producing more auditable research briefs rather than showcasing a framework by itself.
-
-## Tools used
-
-- Python 3.11+
-- Hermes Agent CLI for synthesis
-- Wikipedia MediaWiki and REST APIs for source gathering
-- `uv` for environments and commands
-- `pytest` for behavioral tests
-- `ruff` for linting
-- GitHub Actions for continuous integration
-
-No Python runtime dependencies are required; collection uses the standard library.
-
-## How the agent workflow works
+## Architecture
 
 ```text
-Topic
-  |
-  v
-WikipediaCollector ----> small evidence packet with S1...Sn
-  |                                  |
-  |                                  v
-  +--------------------------> HermesSynthesizer
-                                      |
-                                      v
-                                  Draft JSON
-                                      |
-                                      v
-                              deterministic evaluator
-                           / unknown source ID? reject
-                          / missing claim citation? reject
-                         / no uncertainty? reject
-                                      |
-                                      v
-                             cited Markdown brief
+research question
+      |
+      v
+arXiv | Crossref | Data.gov | Wikipedia
+      |
+      v
+cached/retried HTTP + normalized provenance
+      |
+      v
+relevance + authority + recency + diversity ranking
+      |
+      v
+bounded evidence packet (S1...Sn)
+      |
+      v
+Hermes constrained synthesis
+      |
+      v
+claims + citations + exact evidence spans
+      |
+      v
+deterministic evaluator
+  - known source IDs?
+  - exact quote exists in source?
+  - every claim has evidence?
+  - independent lexical support?
+  - uncertainty present?
+      |
+      +--> Markdown brief
+      +--> HTML Evidence Inspector
 ```
 
-The model receives the source packet directly and is told to use only that packet. The evaluator does not ask the model whether its own citations are valid; it checks IDs and citation coverage in Python.
+## Source families
 
-### Project structure
+- `arxiv`: version-preserving paper URLs, titles, abstracts, authors, and publication dates.
+- `crossref`: DOI records with abstracts, authors, publishers, and publication dates.
+- `government`: official dataset descriptions from the Data.gov catalog.
+- `wikipedia`: reproducible fallback summaries; lower authority weight than primary-source families.
 
-```text
-src/research_assistant/
-  collectors.py   # bounded source retrieval
-  hermes.py       # prompt and Hermes CLI adapter
-  evaluation.py   # deterministic citation checks
-  pipeline.py     # workflow orchestration and rendering
-  cli.py          # command-line interface
-tests/             # unit and workflow tests
-examples/          # brief produced by a real end-to-end run
-```
+The default run queries all four. Use repeated `--source` flags to restrict collection.
 
 ## Setup
 
-Prerequisites:
+Requirements:
 
-- Python 3.11 or newer
+- Python 3.11+
 - `uv`
-- Hermes Agent installed and authenticated (`hermes doctor` is useful)
+- Hermes Agent installed and authenticated
 
 ```bash
 git clone https://github.com/Saj8292008/ai-research-assistant.git
 cd ai-research-assistant
 uv sync --extra dev
+hermes doctor
 ```
 
-Hermes can use its configured default model, or the CLI can override provider and model explicitly.
+No runtime Python dependencies are required; the implementation uses the standard library.
 
 ## Usage
 
+Primary-source run with both outputs:
+
 ```bash
 uv run research-assistant \
-  "How do AI agents use tools?" \
-  --max-sources 2 \
+  "How do AI agents use external tools reliably?" \
+  --max-sources 5 \
+  --source arxiv \
+  --source crossref \
+  --source government \
   --provider openai-codex \
   --model gpt-5.6-sol \
-  --output brief.md
+  --output brief.md \
+  --html-output evidence-inspector.html
 ```
 
-If your Hermes default provider works, omit `--provider` and `--model`:
+Use every collector and the configured Hermes default:
 
 ```bash
-uv run research-assistant "What are the limitations of retrieval-augmented generation?"
+uv run research-assistant \
+  "What are the limitations of retrieval-augmented generation?" \
+  --output brief.md \
+  --html-output brief.html
 ```
 
-## Example input and output
+Options:
 
-Input:
+- `--max-sources 1..10`: bounded final packet size; default 5.
+- `--source arxiv|crossref|government|wikipedia`: repeat to select source families.
+- `--cache-dir PATH`: cached API responses; default `~/.cache/ai-research-assistant`.
+- `--provider` / `--model`: explicit Hermes overrides.
+- `--output`: Markdown artifact.
+- `--html-output`: self-contained evidence inspector.
+
+## Evidence contract
+
+Hermes returns structured JSON containing:
+
+- `summary`
+- `findings`
+- `uncertainty`
+- `evidence`
+  - claim ID (`summary`, `finding_1`, ...)
+  - cited source ID
+  - exact quote copied from source text
+
+The evaluator checks this outside the model. Every summary/finding must:
+
+- contain a known citation,
+- have at least one evidence span,
+- quote text that occurs exactly in the cited source,
+- pass an independent lexical support screen.
+
+Evidence from multiple quotes is combined for multi-part claims. Lightweight stemming handles basic paraphrases. A claim passes when overlap is strong or when at least two substantive claim terms appear with sufficient coverage. A conservative polarity check rejects claim/evidence pairs when only one side contains explicit negation; this catches simple contradictions but is not a general natural-language inference model.
+
+## Evidence Inspector
+
+The generated HTML page displays each claim beside:
+
+- its exact evidence passage,
+- source ID and title,
+- publisher/source family,
+- direct source link,
+- publication/fetch dates, cache status, ranking score, and content hash.
+
+It is self-contained and needs no server. The checked-in real example is:
+
+- `examples/primary-sources-brief.md`
+- `examples/primary-sources-inspector.html`
+
+## Reliability behavior
+
+The pipeline fails closed when:
+
+- every collector fails or produces no usable source,
+- Hermes fails or returns invalid JSON/schema,
+- a citation ID was not collected,
+- a summary or finding lacks a citation,
+- an evidence quote is absent from its source,
+- an evidence source is not cited by its claim,
+- a claim lacks exact evidence,
+- the independent entailment screen finds insufficient support,
+- uncertainty is missing.
+
+It never replaces a rejected run with plausible fallback prose.
+
+## Testing
+
+```bash
+uv run pytest -q
+uv run ruff check .
+uv build
+```
+
+The suite covers:
+
+- all four source normalizers,
+- source ranking and diversity,
+- cache hits and bounded retries,
+- provenance and content hashes,
+- Hermes structured-evidence parsing,
+- provider/model overrides,
+- citation validity and coverage,
+- exact-quote validation,
+- aggregate multi-span support,
+- supported paraphrases,
+- explicit-negation contradictions,
+- symbol-heavy ranking queries,
+- fail-closed pipeline behavior,
+- HTML escaping, safe links, provenance, and claim/evidence presentation,
+- CLI source selection and output options.
+
+GitHub Actions runs tests and linting on every push.
+
+## Real executed example
+
+The repository includes a real network + Hermes run for:
 
 ```text
-How do AI agents use tools?
+How do AI agents use external tools reliably?
 ```
 
-Excerpt from a real run:
+The run collected and ranked three sources, generated claim-level evidence, passed citation/evidence/entailment checks, and produced both example artifacts. The brief explicitly reports that only one source directly addressed agent configuration; the others were weaker contextual evidence. This is expected behavior: weak retrieval must be exposed, not stretched into certainty.
 
-```markdown
-## Summary
+## What went wrong and what improved
 
-AI agents use software or other tools to pursue goals and take actions with some level of autonomy [S2]. The packet distinguishes these agents from "tool AI," which performs narrow, specified tasks, but it does not explain the mechanisms by which agents select, invoke, or coordinate tools [S2].
+1. The original MVP relied only on Wikipedia summaries.
+   - Added arXiv, Crossref, and Data.gov collectors while retaining Wikipedia as a fallback.
 
-## Uncertainty
+2. Search APIs returned tangential results.
+   - Added relevance, authority, recency, and source-diversity ranking; the final brief still discloses weak sources.
 
-- The packet does not describe how agents choose tools, supply inputs, interpret outputs, handle failures, or decide when to act [S2].
-- Both sources are brief Wikipedia excerpts, so the evidence lacks technical detail, primary-source support, empirical results, and information about risks or reliability [S1][S2].
-```
+3. Citation-ID validation did not prove evidentiary support.
+   - Added exact claim-level evidence spans and source-text verification.
 
-See the complete generated brief in [`examples/ai-agents-brief.md`](examples/ai-agents-brief.md).
+4. A strict single-quote lexical threshold rejected valid multi-part summaries.
+   - Added aggregate support across all exact quotes attached to a claim and lightweight stemming for paraphrases.
 
-## Reliability and evaluation
+5. Network calls were brittle and repeated unnecessarily.
+   - Added bounded retries, exponential backoff, and deterministic disk caching.
 
-The project uses layered safeguards:
+6. Markdown made claim/evidence auditing cumbersome.
+   - Added a responsive side-by-side HTML evidence inspector.
 
-- **Bounded evidence:** at most five sources enter a run.
-- **Grounded prompt:** the model is instructed to use only supplied text.
-- **Stable source IDs:** citations must use collected IDs such as `[S1]`.
-- **Unknown-citation rejection:** `[S9]` fails if no `S9` source exists.
-- **Citation coverage:** the summary and every finding need a citation.
-- **Required uncertainty:** a brief without limitations/open questions fails.
-- **Dependency injection:** fake collectors and synthesizers make edge cases deterministic in tests.
-- **Fail closed:** collection, invalid JSON, Hermes failures, and validation failures return an error instead of a plausible-looking brief.
+## Honest limitations
 
-The automated test suite covers valid briefs, invented citations, missing citations, no-source failures, API normalization, Hermes JSON parsing, provider overrides, CLI failures, citation coverage, and uncertainty detection.
+- API search relevance remains imperfect, especially for broad or ambiguous questions.
+- Crossref records without abstracts are rejected, reducing coverage.
+- Data.gov is useful for official datasets but is not a universal government-document search engine.
+- Abstracts and dataset descriptions are not full-text evidence.
+- The lexical entailment screen is independent and deterministic, but it is a heuristic—not proof of semantic entailment.
+- Source authority is represented by transparent family-level weights, not a universal truth score.
+- Human review is still required for consequential research.
 
-Run quality checks:
+## Next steps
 
-```bash
-uv run --extra dev pytest -q
-uv run --extra dev ruff check .
-```
-
-## What went wrong during testing
-
-1. **The configured Hermes provider was stale.** The first end-to-end run failed because the local Hermes config still named an unavailable provider. The original adapter only read `stderr`, while Hermes reported the useful error in `stdout`.
-   - Improvement: added `--provider` and `--model` overrides and surfaced errors from either stream.
-
-2. **Search relevance was imperfect.** For “How do AI agents use tools?”, one of the two pages was about Claude and contributed little direct evidence.
-   - Improvement: the brief explicitly reported the weak source in its uncertainty section rather than stretching it into a stronger claim.
-
-3. **Model output is not automatically trustworthy.** Valid JSON can still contain invented citation IDs or uncited prose.
-   - Improvement: added deterministic post-generation checks and tests that prove invalid drafts are rejected.
-
-4. **A small source set improves auditability but limits completeness.** Two short encyclopedia summaries cannot support a deep technical conclusion.
-   - Improvement: cap claims to the supplied evidence and expose the limitation in every brief.
-
-## Responsible AI choices
-
-- The application labels uncertainty rather than presenting synthesis as settled fact.
-- It links every collected source so a reader can inspect the evidence.
-- It does not hide failures behind fallback prose.
-- It avoids autonomous publishing or decision-making.
-- It clearly states that Wikipedia summaries are not a substitute for primary research.
-
-Citation validation proves that a cited ID exists; it does **not** prove that the sentence accurately represents the source. That remaining entailment problem is the largest reliability limitation in this MVP.
-
-## What I would build next
-
-1. Add primary-source collectors for arXiv, Crossref, and government domains.
-2. Rank sources for relevance, authority, recency, and diversity.
-3. Fetch full text and attach sentence-level evidence spans to each claim.
-4. Add an independent entailment checker rather than only validating citation IDs.
-5. Detect conflicts between sources and represent competing conclusions.
-6. Create a benchmark dataset with expected citations and human quality ratings.
-7. Add caching, retry/backoff, rate-limit handling, and provenance metadata.
-8. Build a small web UI that lets users inspect each claim beside its evidence.
+- Add full-text extraction with passage offsets.
+- Add domain-specific government collectors and Crossref/DOI full-text resolution.
+- Add a benchmark set with expected claims, passages, and human entailment labels.
+- Compare lexical screening against an independently configured NLI model.
+- Add deduplication by DOI/title/content hash and richer conflict detection.
+- Add exportable machine-readable run manifests.
 
 ## License
 
